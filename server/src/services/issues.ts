@@ -312,6 +312,16 @@ function withActiveRuns(
   }));
 }
 
+/** Returns the patch fields that atomically clear all execution lock state from an issue. */
+export function clearExecutionLockFields() {
+  return {
+    checkoutRunId: null,
+    executionRunId: null,
+    executionLockedAt: null,
+    executionAgentNameKey: null,
+  } as const;
+}
+
 export function issueService(db: Db) {
   async function assertAssignableAgent(companyId: string, agentId: string) {
     const assignee = await db
@@ -751,13 +761,13 @@ export function issueService(db: Db) {
         patch.cancelledAt = null;
       }
       if (issueData.status && issueData.status !== "in_progress") {
-        patch.checkoutRunId = null;
+        Object.assign(patch, clearExecutionLockFields());
       }
       if (
         (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
         (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
       ) {
-        patch.checkoutRunId = null;
+        Object.assign(patch, clearExecutionLockFields());
       }
 
       return db.transaction(async (tx) => {
@@ -1021,7 +1031,7 @@ export function issueService(db: Db) {
         .set({
           status: "todo",
           assigneeAgentId: null,
-          checkoutRunId: null,
+          ...clearExecutionLockFields(),
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
