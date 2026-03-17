@@ -1490,6 +1490,7 @@ export function heartbeatService(db: Db) {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            status: issues.status,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -1546,6 +1547,45 @@ export function heartbeatService(db: Db) {
       worktreePath: executionWorkspace.worktreePath,
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
+
+    // ── Live context injection ──────────────────────────────────────────────
+    // Claude Code reuses long sessions (60k+ cached tokens) that may hold
+    // stale issue state in memory. When a run is triggered by a new comment,
+    // inject the fresh issue state + triggering comment as a non-cacheable
+    // block appended to the system prompt so the agent can't rely on stale
+    // session memory about the issue's current status or pending requests.
+    const wakeReasonValue = readNonEmptyString(context.wakeReason);
+    const wakeCommentIdValue =
+      readNonEmptyString(context.wakeCommentId) ?? readNonEmptyString(context.commentId);
+    if (issueRef && wakeReasonValue === "issue_commented" && wakeCommentIdValue) {
+      const triggeringComment = await issuesSvc
+        .getComment(wakeCommentIdValue)
+        .catch(() => null);
+      if (triggeringComment?.body) {
+        const quotedBody = triggeringComment.body
+          .split("\n")
+          .map((line) => `> ${line}`)
+          .join("\n");
+        context.paperclipLiveContext = [
+          "## Live Context — Current Issue State",
+          "",
+          "> **Injected fresh at run time. Supersedes any session memory about this issue.**",
+          "",
+          `**Issue:** ${issueRef.identifier} — ${issueRef.title}`,
+          `**Current status:** ${issueRef.status}`,
+          "",
+          "**New comment triggering this run:**",
+          "",
+          quotedBody,
+          "",
+          "Do not rely on session memory for this issue's state. The above is authoritative.",
+        ].join("\n");
+      }
+    } else {
+      delete context.paperclipLiveContext;
+    }
+    // ───────────────────────────────────────────────────────────────────────
+
     const runtimeServiceIntents = (() => {
       const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
       return Array.isArray(runtimeConfig.services)

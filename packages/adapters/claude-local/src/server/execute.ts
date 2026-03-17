@@ -369,6 +369,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "",
   ].join("\n");
 
+  // Live context block: injected fresh from DB when wakeReason=issue_commented.
+  // Appended last so it sits at the bottom of the system prompt (highest
+  // recency salience) and overrides any stale session memory about issue state.
+  const liveContextNote = (() => {
+    const raw = typeof context.paperclipLiveContext === "string" ? context.paperclipLiveContext.trim() : "";
+    return raw.length > 0 ? `\n\n${raw}\n` : "";
+  })();
+
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
   // --append-system-prompt-file (Claude CLI forbids using both flags together).
@@ -377,12 +385,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
     const pathDirective = `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}.`;
     const combinedPath = path.join(skillsDir, "agent-instructions.md");
-    await fs.writeFile(combinedPath, instructionsContent + pathDirective + envBootstrapNote, "utf-8");
+    await fs.writeFile(combinedPath, instructionsContent + pathDirective + envBootstrapNote + liveContextNote, "utf-8");
     effectiveInstructionsFilePath = combinedPath;
   } else {
     // Even without custom instructions, ensure env bootstrap is available.
     const combinedPath = path.join(skillsDir, "agent-instructions.md");
-    await fs.writeFile(combinedPath, envBootstrapNote, "utf-8");
+    await fs.writeFile(combinedPath, envBootstrapNote + liveContextNote, "utf-8");
     effectiveInstructionsFilePath = combinedPath;
   }
 
