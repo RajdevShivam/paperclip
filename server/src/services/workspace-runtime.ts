@@ -301,6 +301,21 @@ async function runWorkspaceCommand(input: {
   );
 }
 
+/**
+ * Validates a workspace command string against an allowlist to prevent command injection.
+ * Only permits: alphanumeric chars, spaces, hyphens, underscores, dots, forward slashes,
+ * and `${}` env var syntax. Throws if any injection characters are detected.
+ */
+export function validateWorkspaceCommand(cmd: string): void {
+  // Block shell metacharacters that enable injection
+  const blocked = /[;|`&<>\n]|\$\(/;
+  if (blocked.test(cmd)) {
+    throw new Error(
+      `Workspace command contains disallowed characters. Only alphanumeric characters, spaces, hyphens, underscores, dots, forward slashes, and \${VAR} env var syntax are permitted.`,
+    );
+  }
+}
+
 async function provisionExecutionWorktree(input: {
   strategy: Record<string, unknown>;
   base: ExecutionWorkspaceInput;
@@ -313,6 +328,7 @@ async function provisionExecutionWorktree(input: {
 }) {
   const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
   if (!provisionCommand) return;
+  validateWorkspaceCommand(provisionCommand);
 
   await runWorkspaceCommand({
     command: provisionCommand,
@@ -498,6 +514,18 @@ async function waitForReadiness(input: {
   const readiness = parseObject(input.service.readiness);
   const readinessType = asString(readiness.type, "");
   if (readinessType !== "http" || !input.url) return;
+  // For localhost services, single fast probe — they're either up or not
+  const isLocalhost = input.url.includes("://127.0.0.1") || input.url.includes("://localhost");
+  if (isLocalhost) {
+    try {
+      const response = await fetch(input.url, { signal: AbortSignal.timeout(2000) });
+      if (response.ok) return;
+      throw new Error(`received HTTP ${response.status}`);
+    } catch (err) {
+      throw new Error(`Readiness check failed for ${input.url}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   const timeoutSec = Math.max(1, asNumber(readiness.timeoutSec, 30));
   const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
   const deadline = Date.now() + timeoutSec * 1000;

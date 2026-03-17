@@ -1257,6 +1257,27 @@ export function heartbeatService(db: Db) {
           message: "Process lost -- server may have restarted",
         });
         await releaseIssueExecutionAndPromote(updatedRun);
+
+        // If the process was lost before it did any work (empty stdout) and the run
+        // was triggered by an issue assignment, re-enqueue a wakeup so the issue is
+        // not left in limbo. This handles the case where a server restart killed the
+        // agent immediately after the run was created but before execution began.
+        const wakeReason = readNonEmptyString(
+          (updatedRun.contextSnapshot as Record<string, unknown> | null)?.wakeReason,
+        );
+        if (
+          updatedRun.errorCode === "process_lost" &&
+          !updatedRun.stdoutExcerpt &&
+          wakeReason === "issue_assigned"
+        ) {
+          await enqueueWakeup(updatedRun.agentId, {
+            source: "automation",
+            triggerDetail: "system",
+            contextSnapshot: (updatedRun.contextSnapshot as Record<string, unknown>) ?? {},
+          }).catch((err) => {
+            logger.warn({ err, runId: updatedRun.id }, "failed to re-enqueue wakeup after process_lost with no work");
+          });
+        }
       }
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
@@ -1837,7 +1858,26 @@ export function heartbeatService(db: Db) {
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
+        const permissionBlockPhrases = [
+          "unable to proceed",
+          "require user approval",
+          "requires user approval",
+          "cannot proceed",
+          "permission denied",
+          "bash commands require",
+          /need.*approval/,
+        ];
+        const lowerStdout = stdoutExcerpt.toLowerCase();
+        const isPermissionBlocked = permissionBlockPhrases.some((phrase) =>
+          typeof phrase === "string" ? lowerStdout.includes(phrase) : phrase.test(lowerStdout),
+        );
+        if (isPermissionBlocked) {
+          outcome = "failed";
+          adapterResult.errorMessage =
+            "Agent exited with code 0 but was blocked by permission checks — dangerouslySkipPermissions may not be active";
+        } else {
+          outcome = "succeeded";
+        }
       } else {
         outcome = "failed";
       }
@@ -2073,6 +2113,7 @@ export function heartbeatService(db: Db) {
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
+          checkoutRunId: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issue.id));
