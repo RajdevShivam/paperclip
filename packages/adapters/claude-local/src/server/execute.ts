@@ -26,6 +26,7 @@ import {
   detectClaudeLoginRequired,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
+  isClaudeApiServerError,
 } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -570,6 +571,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } as Record<string, unknown>)
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    // Anthropic 5xx: transient server error. The session may still be valid
+    // but we clear it so the next run starts fresh rather than resuming a
+    // potentially-inconsistent state after an API failure.
+    const clearSessionForApiServerError = isClaudeApiServerError(parsed);
 
     return {
       exitCode: proc.exitCode,
@@ -579,7 +584,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorCode: loginMeta.requiresLogin
+        ? "claude_auth_required"
+        : clearSessionForApiServerError
+          ? "anthropic_api_error"
+          : null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,
@@ -591,7 +600,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
       resultJson: parsed,
       summary: parsedStream.summary || asString(parsed.result, ""),
-      clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+      clearSession:
+        clearSessionForMaxTurns ||
+        clearSessionForApiServerError ||
+        Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
     };
   };
 

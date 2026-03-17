@@ -167,6 +167,21 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   return /max(?:imum)?\s+turns?/i.test(resultText);
 }
 
+// Matches "API Error: 5XX ..." strings that the Claude CLI surfaces when
+// Anthropic's API returns a server-side error. These are transient — the
+// session itself is not corrupted — but we clear it so the next run doesn't
+// blindly resume a potentially-inconsistent conversation state.
+const ANTHROPIC_SERVER_ERROR_RE = /API\s+Error:\s+5\d\d/i;
+
+export function isClaudeApiServerError(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+  return allMessages.some((msg) => ANTHROPIC_SERVER_ERROR_RE.test(msg));
+}
+
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
